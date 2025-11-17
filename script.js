@@ -1,19 +1,31 @@
-// Initialize data
-let products = JSON.parse(localStorage.getItem('products')) || [];
-let categories = JSON.parse(localStorage.getItem('categories')) || ['Electronics', 'Clothing', 'Food', 'Furniture', 'Stationery'];
-let stockTransactions = JSON.parse(localStorage.getItem('stockTransactions')) || [];
-let settings = JSON.parse(localStorage.getItem('settings')) || { lowStockThreshold: 10, currencySymbol: '$' };
+// Updated script.js for PHP MySQL integration
+const API_BASE = 'api';
+
+// Global variables
+let products = [];
+let categories = [];
+let stockTransactions = [];
+let settings = { lowStockThreshold: 10, currencySymbol: '$' };
 
 let currentPage = 1;
 const itemsPerPage = 10;
-let filteredProducts = [...products];
+let filteredProducts = [];
 
-// Save data to localStorage
-function saveData() {
-    localStorage.setItem('products', JSON.stringify(products));
-    localStorage.setItem('categories', JSON.stringify(categories));
-    localStorage.setItem('stockTransactions', JSON.stringify(stockTransactions));
-    localStorage.setItem('settings', JSON.stringify(settings));
+// Initialize data from API
+async function initializeData() {
+    try {
+        const [settingsRes, productsRes, categoriesRes, transactionsRes] = await Promise.all([
+            fetch(`${API_BASE}/settings.php`),
+            fetch(`${API_BASE}/products.php?page=1&limit=1000`),
+            fetch(`${API_BASE}/categories.php`),
+            fetch(`${API_BASE}/transactions.php`)
+        ]);
+        
+        // ... rest of the code
+    } catch (error) {
+        console.error('Error initializing data:', error);
+        showToast('Error loading data from server', true);
+    }
 }
 
 // Navigation
@@ -109,7 +121,7 @@ let categoryChart, statusChart;
 function updateCharts() {
     const categoryData = {};
     categories.forEach(cat => {
-        categoryData[cat] = products.filter(p => p.category === cat).length;
+        categoryData[cat.name] = products.filter(p => p.category_name === cat.name).length;
     });
     
     const statusData = {
@@ -172,9 +184,9 @@ function renderProducts() {
         row.innerHTML = `
             <td>${product.id}</td>
             <td>${product.name}</td>
-            <td>${product.category}</td>
+            <td>${product.category_name || product.category}</td>
             <td>${product.quantity}</td>
-            <td>${settings.currencySymbol}${product.price.toFixed(2)}</td>
+            <td>${settings.currencySymbol}${parseFloat(product.price).toFixed(2)}</td>
             <td>${settings.currencySymbol}${totalValue.toFixed(2)}</td>
             <td><span class="status-badge status-${status}">${getStatusText(status)}</span></td>
             <td class="action-buttons">
@@ -240,9 +252,20 @@ function applyFilters() {
     const statusFilter = document.getElementById('statusFilter').value;
     
     filteredProducts = products.filter(product => {
+        const categoryName = product.category_name || product.category || 'Uncategorized';
         const matchesSearch = product.name.toLowerCase().includes(searchTerm) || 
                             product.id.toString().includes(searchTerm);
-        const matchesCategory = !categoryFilter || product.category === categoryFilter;
+        
+        // Updated category matching logic
+        let matchesCategory = true;
+        if (categoryFilter) {
+            if (categoryFilter === 'uncategorized') {
+                matchesCategory = !categoryName || categoryName === 'Uncategorized';
+            } else {
+                matchesCategory = categoryName === categoryFilter;
+            }
+        }
+        
         const matchesStatus = !statusFilter || getProductStatus(product.quantity) === statusFilter;
         
         return matchesSearch && matchesCategory && matchesStatus;
@@ -250,7 +273,6 @@ function applyFilters() {
     
     currentPage = 1;
 }
-
 document.getElementById('searchProduct').addEventListener('input', renderProducts);
 document.getElementById('categoryFilter').addEventListener('change', renderProducts);
 document.getElementById('statusFilter').addEventListener('change', renderProducts);
@@ -263,25 +285,26 @@ function updateCategoryFilter() {
     const currentFilterValue = categoryFilter.value;
     const currentCategoryValue = productCategory.value;
     
-    categoryFilter.innerHTML = '<option value="">All Categories</option>';
-    productCategory.innerHTML = '<option value="">Select Category</option>';
+    // Update category filter dropdown
+    categoryFilter.innerHTML = '<option value="">All Categories</option><option value="uncategorized">Uncategorized</option>';
+    productCategory.innerHTML = '<option value="">No Category</option>';
     
     categories.forEach(cat => {
+        const categoryName = cat.name || cat;
         const option1 = document.createElement('option');
-        option1.value = cat;
-        option1.textContent = cat;
+        option1.value = categoryName;
+        option1.textContent = categoryName;
         categoryFilter.appendChild(option1);
         
         const option2 = document.createElement('option');
-        option2.value = cat;
-        option2.textContent = cat;
+        option2.value = categoryName;
+        option2.textContent = categoryName;
         productCategory.appendChild(option2);
     });
     
     categoryFilter.value = currentFilterValue;
     productCategory.value = currentCategoryValue;
 }
-
 // Modal controls
 document.querySelectorAll('.close-modal').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -307,94 +330,76 @@ document.getElementById('addProductBtn').addEventListener('click', () => {
     updateCategoryFilter();
 });
 
-// Product form submit
-document.getElementById('productForm').addEventListener('submit', (e) => {
+document.getElementById('productForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     
     const productId = document.getElementById('productId').value;
-    const name = document.getElementById('productName').value.trim();
-    const category = document.getElementById('productCategory').value;
-    const quantity = parseInt(document.getElementById('productQuantity').value);
-    const price = parseFloat(document.getElementById('productPrice').value);
-    const supplier = document.getElementById('productSupplier').value.trim();
-    const date = document.getElementById('productDate').value;
+    const productData = {
+        name: document.getElementById('productName').value.trim(),
+        category_id: await getCategoryId(document.getElementById('productCategory').value), // This can be null now
+        quantity: parseInt(document.getElementById('productQuantity').value),
+        price: parseFloat(document.getElementById('productPrice').value),
+        supplier: document.getElementById('productSupplier').value.trim(),
+        date_added: document.getElementById('productDate').value
+    };
     
-    if (!name || !category || isNaN(quantity) || isNaN(price)) {
-        showToast('Please fill all required fields correctly', true);
+    // UPDATED VALIDATION - category_id is now optional
+    if (!productData.name || isNaN(productData.quantity) || isNaN(productData.price)) {
+        showToast('Please fill Name, Quantity, and Price fields correctly', true);
         return;
     }
     
-    if (productId) {
-        // Edit existing product
-        const index = products.findIndex(p => p.id === parseInt(productId));
-        if (index !== -1) {
-            const oldQuantity = products[index].quantity;
-            products[index] = {
-                ...products[index],
-                name,
-                category,
-                quantity,
-                price,
-                supplier,
-                date
-            };
-            
-            // Log stock transaction
-            const diff = quantity - oldQuantity;
-            if (diff !== 0) {
-                stockTransactions.push({
-                    date: new Date().toISOString(),
-                    product: name,
-                    type: diff > 0 ? 'Stock In' : 'Stock Out',
-                    quantity: Math.abs(diff),
-                    notes: 'Product updated'
-                });
-            }
-            
-            showToast('Product updated successfully!');
-        }
-    } else {
-        // Add new product
-        const newProduct = {
-            id: products.length > 0 ? Math.max(...products.map(p => p.id)) + 1 : 1,
-            name,
-            category,
-            quantity,
-            price,
-            supplier,
-            date
-        };
-        products.push(newProduct);
+    const success = await saveProduct(productData, !!productId);
+    if (success) {
+        document.getElementById('productModal').classList.remove('active');
+    }
+});
+// Save product to API
+async function saveProduct(productData, isEdit = false) {
+    try {
+        const url = isEdit ? `${API_BASE}/products/${productData.id}` : `${API_BASE}/products`;
+        const method = isEdit ? 'PUT' : 'POST';
         
-        // Log stock transaction
-        stockTransactions.push({
-            date: new Date().toISOString(),
-            product: name,
-            type: 'Stock In',
-            quantity: quantity,
-            notes: 'New product added'
+        const response = await fetch(url, {
+            method: method,
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(productData)
         });
         
-        showToast('Product added successfully!');
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to save product');
+        }
+        
+        const result = await response.json();
+        showToast(result.message);
+        
+        // Refresh data
+        await initializeData();
+        return true;
+    } catch (error) {
+        showToast(error.message || 'Error saving product', true);
+        return false;
     }
-    
-    saveData();
-    renderProducts();
-    updateDashboard();
-    document.getElementById('productModal').classList.remove('active');
-});
+}
 
 // Edit product
-function editProduct(id) {
+async function editProduct(id) {
     const product = products.find(p => p.id === id);
     if (product) {
         document.getElementById('productId').value = product.id;
         document.getElementById('productName').value = product.name;
-        document.getElementById('productCategory').value = product.category;
+        
+        // Set category name in dropdown
+        const categoryName = product.category_name || product.category;
+        document.getElementById('productCategory').value = categoryName;
+        
         document.getElementById('productQuantity').value = product.quantity;
         document.getElementById('productPrice').value = product.price;
         document.getElementById('productSupplier').value = product.supplier || '';
-        document.getElementById('productDate').value = product.date || '';
+        document.getElementById('productDate').value = product.date_added || product.date || '';
         document.getElementById('modalTitle').textContent = 'Edit Product';
         document.getElementById('productModal').classList.add('active');
         updateCategoryFilter();
@@ -402,27 +407,45 @@ function editProduct(id) {
 }
 
 // Delete product
-function deleteProduct(id) {
-    if (confirm('Are you sure you want to delete this product?')) {
-        const product = products.find(p => p.id === id);
-        products = products.filter(p => p.id !== id);
+async function deleteProduct(id) {
+    if (!confirm('Are you sure you want to delete this category?')) return;
+    
+    try {
+        const response = await fetch(`${API_BASE}/categories.php?id=${id}`, {
+            method: 'DELETE'
+        });
         
-        // Log stock transaction
-        if (product) {
-            stockTransactions.push({
-                date: new Date().toISOString(),
-                product: product.name,
-                type: 'Stock Out',
-                quantity: product.quantity,
-                notes: 'Product deleted'
-            });
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to delete category');
         }
         
-        saveData();
-        renderProducts();
-        updateDashboard();
-        showToast('Product deleted successfully!');
+        const result = await response.json();
+        showToast(result.message);
+        
+        await initializeData();
+    } catch (error) {
+        showToast(error.message || 'Error deleting category', true);
     }
+}
+
+// Helper function to get category ID by name
+async function getCategoryId(categoryName) {
+    if (!categoryName || categoryName === '') {
+        return null; // Return null for empty category
+    }
+    
+    try {
+        const categoriesRes = await fetch(`${API_BASE}/categories.php`);
+        if (categoriesRes.ok) {
+            const categories = await categoriesRes.json();
+            const category = categories.find(cat => (cat.name || cat) === categoryName);
+            return category ? category.id : null;
+        }
+    } catch (error) {
+        console.error('Error getting category ID:', error);
+    }
+    return null;
 }
 
 // Categories
@@ -430,7 +453,7 @@ document.getElementById('addCategoryBtn').addEventListener('click', () => {
     document.getElementById('categoryModal').classList.add('active');
 });
 
-document.getElementById('categoryForm').addEventListener('submit', (e) => {
+document.getElementById('categoryForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const categoryName = document.getElementById('categoryName').value.trim();
     
@@ -439,33 +462,57 @@ document.getElementById('categoryForm').addEventListener('submit', (e) => {
         return;
     }
     
-    if (categories.includes(categoryName)) {
-        showToast('Category already exists', true);
-        return;
+    const success = await saveCategory(categoryName);
+    if (success) {
+        document.getElementById('categoryModal').classList.remove('active');
+        document.getElementById('categoryForm').reset();
     }
-    
-    categories.push(categoryName);
-    saveData();
-    renderCategories();
-    updateCategoryFilter();
-    document.getElementById('categoryModal').classList.remove('active');
-    document.getElementById('categoryForm').reset();
-    showToast('Category added successfully!');
 });
+
+
+
+// Save category to API
+async function saveCategory(categoryName) {
+    try {
+        const response = await fetch(`${API_BASE}/categories`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: categoryName })
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to add category');
+        }
+        
+        const result = await response.json();
+        showToast(result.message);
+        
+        // Refresh data
+        await initializeData();
+        return true;
+    } catch (error) {
+        showToast(error.message || 'Error adding category', true);
+        return false;
+    }
+}
 
 function renderCategories() {
     const tbody = document.getElementById('categoriesTableBody');
     tbody.innerHTML = '';
     
     categories.forEach(category => {
-        const productCount = products.filter(p => p.category === category).length;
+        const categoryName = category.name || category;
+        const productCount = category.product_count || products.filter(p => (p.category_name || p.category) === categoryName).length;
         
         const row = document.createElement('tr');
         row.innerHTML = `
-            <td>${category}</td>
+            <td>${product.category_name || product.category || 'Uncategorized'}</td><td>${categoryName}</td>
             <td>${productCount}</td>
             <td>
-                <button class="btn btn-danger btn-small" onclick="deleteCategory('${category}')">
+                <button class="btn btn-danger btn-small" onclick="deleteCategory(${category.id})">
                     <i class="fas fa-trash"></i>
                 </button>
             </td>
@@ -474,20 +521,27 @@ function renderCategories() {
     });
 }
 
-function deleteCategory(category) {
-    const hasProducts = products.some(p => p.category === category);
+// Delete category
+async function deleteCategory(id) {
+    if (!confirm('Are you sure you want to delete this category?')) return;
     
-    if (hasProducts) {
-        showToast('Cannot delete category with products', true);
-        return;
-    }
-    
-    if (confirm(`Are you sure you want to delete the category "${category}"?`)) {
-        categories = categories.filter(c => c !== category);
-        saveData();
-        renderCategories();
-        updateCategoryFilter();
-        showToast('Category deleted successfully!');
+    try {
+        const response = await fetch(`${API_BASE}/categories/${id}`, {
+            method: 'DELETE'
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to delete category');
+        }
+        
+        const result = await response.json();
+        showToast(result.message);
+        
+        // Refresh data
+        await initializeData();
+    } catch (error) {
+        showToast(error.message || 'Error deleting category', true);
     }
 }
 
@@ -499,13 +553,13 @@ function renderStockTransactions() {
     const sortedTransactions = [...stockTransactions].reverse().slice(0, 50);
     
     sortedTransactions.forEach(transaction => {
-        const date = new Date(transaction.date).toLocaleDateString();
+        const date = new Date(transaction.transaction_date).toLocaleDateString();
         
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${date}</td>
-            <td>${transaction.product}</td>
-            <td><span class="status-badge ${transaction.type === 'Stock In' ? 'status-in-stock' : 'status-out-stock'}">${transaction.type}</span></td>
+            <td>${transaction.product_name || transaction.product}</td>
+            <td><span class="status-badge ${transaction.transaction_type === 'Stock In' ? 'status-in-stock' : 'status-out-stock'}">${transaction.transaction_type}</span></td>
             <td>${transaction.quantity}</td>
             <td>${transaction.notes}</td>
         `;
@@ -575,22 +629,40 @@ function updateReports() {
 }
 
 // Settings
-document.getElementById('lowStockThreshold').value = settings.lowStockThreshold;
-document.getElementById('currencySymbol').value = settings.currencySymbol;
-
-document.getElementById('saveSettings').addEventListener('click', () => {
-    settings.lowStockThreshold = parseInt(document.getElementById('lowStockThreshold').value);
-    settings.currencySymbol = document.getElementById('currencySymbol').value;
-    saveData();
-    updateDashboard();
-    renderProducts();
-    showToast('Settings saved successfully!');
+document.getElementById('saveSettings').addEventListener('click', async () => {
+    const settingsData = {
+        low_stock_threshold: parseInt(document.getElementById('lowStockThreshold').value),
+        currency_symbol: document.getElementById('currencySymbol').value
+    };
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(settingsData)
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to save settings');
+        }
+        
+        const result = await response.json();
+        showToast(result.message);
+        
+        // Refresh data to get updated settings
+        await initializeData();
+    } catch (error) {
+        showToast(error.message || 'Error saving settings', true);
+    }
 });
 
 document.getElementById('clearData').addEventListener('click', () => {
     if (confirm('Are you sure you want to clear all data? This cannot be undone.')) {
-        localStorage.clear();
-        location.reload();
+        // This would need a separate API endpoint to clear data
+        showToast('Clear data functionality needs backend implementation', true);
     }
 });
 
@@ -600,7 +672,7 @@ document.getElementById('exportCSV').addEventListener('click', () => {
     const rows = products.map(p => [
         p.id,
         p.name,
-        p.category,
+        p.category_name || p.category,
         p.quantity,
         p.price,
         (p.quantity * p.price).toFixed(2),
@@ -624,23 +696,5 @@ document.getElementById('exportCSV').addEventListener('click', () => {
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
-    updateDashboard();
-    renderProducts();
-    renderCategories();
-    renderStockTransactions();
-    updateCategoryFilter();
-    
-    // Add some sample data if empty
-    if (products.length === 0) {
-        products = [
-            { id: 1, name: 'Laptop', category: 'Electronics', quantity: 15, price: 899.99, supplier: 'TechCorp', date: '2024-01-15' },
-            { id: 2, name: 'Office Chair', category: 'Furniture', quantity: 8, price: 199.99, supplier: 'FurniturePlus', date: '2024-02-20' },
-            { id: 3, name: 'Notebook', category: 'Stationery', quantity: 150, price: 2.99, supplier: 'StationeryWorld', date: '2024-03-10' },
-            { id: 4, name: 'T-Shirt', category: 'Clothing', quantity: 5, price: 19.99, supplier: 'FashionHub', date: '2024-04-05' },
-            { id: 5, name: 'Coffee Beans', category: 'Food', quantity: 0, price: 12.99, supplier: 'CoffeeSupply', date: '2024-05-12' }
-        ];
-        saveData();
-        updateDashboard();
-        renderProducts();
-    }
+    initializeData();
 });
